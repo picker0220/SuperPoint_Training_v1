@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Jupyter
+*.ipynb
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific - don't upload
+output.txt
+*.pth
+*.onnx
+checkpoints/
+logs/
+
+# Temporary files
+*.tmp
+*.logoutputs/
+dark/
