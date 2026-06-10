@@ -63,6 +63,11 @@ def parse_args():
     parser.add_argument('--consistency_weight', type=float, default=0.0, help='两视图一致性损失权重')
     parser.add_argument('--consistency_warmup_epochs', type=int, default=3, help='一致性损失 warmup epoch 数')
     parser.add_argument('--consistency_min_confidence', type=float, default=0.05, help='一致性损失只在高置信区域计算')
+    parser.add_argument('--dustbin_weight', type=float, default=None, help='覆盖 config.DUSTBIN_WEIGHT')
+    parser.add_argument('--entropy_warmup_epochs', type=int, default=None, help='entropy 正则 warmup epoch 数 (默认跟 soft 同步)')
+    parser.add_argument('--init_from_magicpoint', type=str, default='', help='从 MagicLeap 公开预训练权重初始化 (rpautrat/SuperPoint weights/superpoint_v6_from_tf.pth)')
+    parser.add_argument('--enable_night_preprocess', action='store_true', help='pseudo_labels 训练时启用 CLAHE+gamma 提亮预处理 (与 HA 工具一致)')
+
     return parser.parse_args()
 
 
