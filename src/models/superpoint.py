@@ -325,7 +325,7 @@ def calibrate_bn(model, image_paths, device='cpu', input_height=480, input_width
         if img is None: continue
         img = cv2.resize(img, (input_width, input_height))
         t = preprocess_image(img)
-        imgs.append(t)
+        imgs.append(t.squeeze(0))  # [1, H, W] for stack
         if len(imgs) >= num_batches * 4:
             break
     if not imgs:
