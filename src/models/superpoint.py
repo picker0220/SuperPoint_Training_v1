@@ -303,8 +303,8 @@ def load_legacy_weights(model, checkpoint_path, verbose=True):
     return model, legacy_loaded
 
 
-@torch.no_grad()
-def calibrate_bn(model, image_paths, device='cpu', input_height=480, input_width=640, num_batches=8):
+
+def calibrate_bn(model, image_paths, device='cpu', input_height=480, input_width=640, num_batches=8):  # NOTE: no @torch.no_grad() decorator, BN running stats must update
     """
     在真实数据上跑几批 forward,校准 BN running_mean / running_var。
     legacy 加载的 BN 默认 init=0/1(实际近似 identity),校准后精度更高。
@@ -337,6 +337,6 @@ def calibrate_bn(model, image_paths, device='cpu', input_height=480, input_width
     # 多次 forward 让 running stats 收敛
     for _ in range(3):
         for i in range(0, batch.shape[0], max(1, batch.shape[0] // num_batches)):
-            model(batch[i:i+num_batches])
+                with torch.no_grad():
     model.eval()
-    print('[calibrate_bn] done, BN running stats calibrated')
+        print('[calibrate_bn] done, BN running stats calibrated')
