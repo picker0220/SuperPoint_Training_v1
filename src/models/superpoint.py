@@ -112,6 +112,34 @@ class SuperPoint(nn.Module):
 
         return desc, det
 
+    def forward_to_feat(self, x):
+        x = F.relu(self.bn1a(self.conv1a(x)))
+        x = F.relu(self.bn1b(self.conv1b(x)))
+        x = self.pool1(x)
+        x = F.relu(self.bn2a(self.conv2a(x)))
+        x = F.relu(self.bn2b(self.conv2b(x)))
+        x = self.pool2(x)
+        x = F.relu(self.bn3a(self.conv3a(x)))
+        x = F.relu(self.bn3b(self.conv3b(x)))
+        x = self.pool3(x)
+        x = F.relu(self.bn4a(self.conv4a(x)))
+        x = F.relu(self.bn4b(self.conv4b(x)))
+        return x
+
+    def forward_onnx(self, x):
+        # ONNX 导出专用: (prob [B,1,H,W], desc [B,256,H/8,W/8])
+        feat = self.forward_to_feat(x)
+        det = F.relu(self.bn_det1(self.det_conv1(feat)))
+        det_logits = self.bn_det2(self.det_conv2(det))
+        prob = torch.softmax(det_logits, dim=1)[:, :-1, :, :]
+        prob = torch.pixel_shuffle(prob, 8)  # [B, 1, H, W]
+        desc = F.relu(self.bn_desc1(self.desc_conv1(feat)))
+        desc = self.bn_desc2(self.desc_conv2(desc))
+        # C++ postprocessOutput 在 1/8 分辨率 spatial lookup, 保持 [B, 256, H/8, W/8]
+        desc = F.normalize(desc, p=2, dim=1)
+        return prob, desc
+
+
 
 def load_magicpoint_weights(model, weights_path, strict=False, verbose=True):
     """
@@ -335,8 +363,174 @@ def calibrate_bn(model, image_paths, device='cpu', input_height=480, input_width
     batch = torch.stack(imgs).to(device)
     print(f'[calibrate_bn] running {num_batches} batches of {batch.shape[0]} images')
     # 多次 forward 让 running stats 收敛
-    for _ in range(3):
-        for i in range(0, batch.shape[0], max(1, batch.shape[0] // num_batches)):
-                with torch.no_grad():
-    model.eval()
-        print('[calibrate_bn] done, BN running stats calibrated')
+    # 多次 forward 让 running stats 收敛 (注:不能用 @torch.no_grad() 装饰器,否则 BN 不会更新 running_mean/var)
+    with torch.no_grad():
+        for _ in range(3):
+            for i in range(0, batch.shape[0], max(1, batch.shape[0] // num_batches)):
+                model(batch[i:i+num_batches])
+
+
+class SuperPointLegacy(nn.Module):
+    """
+    你原来 epoch_35 训的 SuperPoint 架构 (老架构):
+    - 无 BN (老架构没 BN 层)
+    - 8 conv + 3 maxpool,无 normalization
+    - conv4a 输出 256 通道
+    - det_conv1 / desc_conv1 输入 256
+    - encoder 末端输出 256 通道
+
+    输出与新 SuperPoint 完全兼容 (65 类 logits + 256-dim 描述子),
+    训练 / HA / eval 流水线不用改,只是模型类不同。
+
+    用法:
+        from src.models.superpoint import SuperPointLegacy
+        model = SuperPointLegacy()
+        sd = torch.load('checkpoints/superpoint_epoch_35.pth')['model_state_dict']
+        model.load_state_dict(sd)  # 直接 load,不需要 shim
+    """
+    def __init__(self, encoder_dim=256, grid_size=8):
+        super().__init__()
+        self.grid_size = grid_size
+
+        # Block 1
+        self.conv1a = nn.Conv2d(1, 64, kernel_size=3, stride=1, padding=1)
+        self.conv1b = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Block 2
+        self.conv2a = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.conv2b = nn.Conv2d(64, 64, kernel_size=3, stride=1, padding=1)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Block 3
+        self.conv3a = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.conv3b = nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1)
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        # Block 4 - 输出 256 (跟新架构 128 不同)
+        self.conv4a = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        self.conv4b = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+
+        # 检测头 - 输入 256 (跟新架构 128 不同)
+        self.det_conv1 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.det_conv2 = nn.Conv2d(256, 65, kernel_size=1, stride=1)
+
+        # 描述子头 - 输入 256 (跟新架构 128 不同)
+        self.desc_conv1 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.desc_conv2 = nn.Conv2d(256, 256, kernel_size=1, stride=1)
+
+    def forward(self, x):
+        # Block 1
+        x = F.relu(self.conv1a(x))
+        x = F.relu(self.conv1b(x))
+        x = self.pool1(x)
+        # Block 2
+        x = F.relu(self.conv2a(x))
+        x = F.relu(self.conv2b(x))
+        x = self.pool2(x)
+        # Block 3
+        x = F.relu(self.conv3a(x))
+        x = F.relu(self.conv3b(x))
+        x = self.pool3(x)
+        # Block 4
+        x = F.relu(self.conv4a(x))
+        feat = F.relu(self.conv4b(x))
+
+        # 检测头
+        det = F.relu(self.det_conv1(feat))
+        det = self.det_conv2(det)
+        # 描述子头
+        desc = F.relu(self.desc_conv1(feat))
+        desc = self.desc_conv2(desc)
+        desc = F.normalize(desc, p=2, dim=1)
+
+        return desc, det
+
+    def forward_onnx(self, x):
+        """ONNX 导出专用,与新 SuperPoint 的 forward_onnx 输出格式完全一致"""
+        feat = self.forward_to_feat(x)
+        det = F.relu(self.det_conv1(feat))
+        det_logits = self.det_conv2(det)
+        prob = torch.softmax(det_logits, dim=1)[:, :-1, :, :]
+        prob = torch.pixel_shuffle(prob, 8)
+        desc = F.relu(self.desc_conv1(feat))
+        desc = self.desc_conv2(desc)
+        # C++ postprocessOutput 在 1/8 分辨率 spatial lookup,不 pixel_shuffle desc (256/8^2=4 通道错)
+        desc = F.normalize(desc, p=2, dim=1)  # 保持 [B, 256, H/8, W/8] 输出
+        desc = F.normalize(desc, p=2, dim=1)
+        return prob, desc
+
+    def forward_to_feat(self, x):
+        x = F.relu(self.conv1a(x))
+        x = F.relu(self.conv1b(x))
+        x = self.pool1(x)
+        x = F.relu(self.conv2a(x))
+        x = F.relu(self.conv2b(x))
+        x = self.pool2(x)
+        x = F.relu(self.conv3a(x))
+        x = F.relu(self.conv3b(x))
+        x = self.pool3(x)
+        x = F.relu(self.conv4a(x))
+        x = F.relu(self.conv4b(x))
+        return x
+
+
+def load_legacy_checkpoint(ckpt_path, device='cpu', verbose=True):
+    """
+    加载 epoch_35 (老架构) .pth 到一个 SuperPointLegacy 实例。
+    不截断、不 shim,1:1 完美加载,精度跟原 epoch_35 一样。
+
+    Args:
+        ckpt_path: 你的 superpoint_epoch_35.pth 路径
+        device: 加载到的设备
+        verbose: 打印加载报告
+
+    Returns:
+        model: SuperPointLegacy 实例,eval 模式,weights 已加载
+    """
+    import torch
+    model = SuperPointLegacy(encoder_dim=256, grid_size=8)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    sd = ckpt.get('model_state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
+    sd = {k[7:] if k.startswith('module.') else k: v for k, v in sd.items()}
+
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    if verbose:
+        n_loaded = len(sd) - len(unexpected)
+        print(f'[load_legacy_checkpoint] {n_loaded}/{len(sd)} weights loaded into SuperPointLegacy')
+        if missing:
+            print(f'  missing in checkpoint: {len(missing)}')
+            for m in missing[:5]:
+                print(f'    - {m}')
+        if unexpected:
+            print(f'  unexpected keys: {len(unexpected)}')
+            for u in unexpected[:5]:
+                print(f'    - {u}')
+
+    model = model.to(device).eval()
+    return model
+
+
+def detect_arch_from_ckpt(ckpt_path):
+    """
+    检测 .pth 是新架构 (有 BN, 见 bn1a.weight) 还是老架构 (无 BN)。
+    返回 'new' / 'legacy' / 'unknown'
+    """
+    import torch
+    ckpt = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+    sd = ckpt.get('model_state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
+    sd = {k[7:] if k.startswith('module.') else k: v for k, v in sd.items()}
+
+    has_bn = any(k.startswith('bn') for k in sd.keys())
+    has_backbone = any(k.startswith('backbone.') for k in sd.keys())
+    has_detector = any(k.startswith('detector.') for k in sd.keys())
+    has_descriptor = any(k.startswith('descriptor.') for k in sd.keys())
+    has_magicpoint_names = has_backbone or has_detector or has_descriptor
+
+    if has_magicpoint_names:
+        return 'magicpoint'
+    if has_bn:
+        return 'new'
+    if 'conv1a.weight' in sd:
+        return 'legacy'
+    return 'unknown'
