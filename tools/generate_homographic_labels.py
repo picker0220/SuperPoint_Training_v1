@@ -73,14 +73,20 @@ def load_model(checkpoint_path, device='cuda'):
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get('model_state_dict', checkpoint)
 
-    new_state_dict = {}
+    # strip DataParallel 'module.' prefix
+    stripped = {}
     for k, v in state_dict.items():
-        if k.startswith('module.'):
-            new_state_dict[k[7:]] = v
-        else:
-            new_state_dict[k] = v
+        stripped[k[7:] if k.startswith('module.') else k] = v
 
-    model.load_state_dict(new_state_dict)
+    # 检测 MagicLeap Sequential 风格 (rpautrat 转换的 .pth): backbone/detector/descriptor.*
+    is_magicpoint_format = any(k.startswith(('backbone.', 'detector.', 'descriptor.')) for k in stripped)
+
+    if is_magicpoint_format:
+        from src.models.superpoint import load_magicpoint_weights
+        print('[load_model] detected MagicLeap format, applying key mapping')
+        model = load_magicpoint_weights(model, checkpoint_path, strict=False, verbose=False)
+    else:
+        model.load_state_dict(stripped)
     model = model.to(device)
     model.eval()
     return model
