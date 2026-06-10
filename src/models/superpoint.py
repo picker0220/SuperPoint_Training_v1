@@ -196,3 +196,147 @@ def load_magicpoint_weights(model, weights_path, strict=False, verbose=True):
     if strict and (missing or unexpected):
         raise RuntimeError(f'MagicPoint strict load failed: missing={missing}, unexpected={unexpected}')
     return model
+
+def load_legacy_weights(model, checkpoint_path, verbose=True):
+    """
+    从你**老架构**(conv1a-conv4b 是 plain Conv2d 无 BN)训出来的 .pth 加载到当前新架构。
+    典型场景:你之前训的 superpoint_epoch_35.pth,encoder 输出 256 通道。
+    当前新架构 encoder 输出 128 通道,det/desc head 输入 128(兼容 MagicLeap)。
+
+    截断法(Truncation)映射:
+        老 conv1a/1b/2a/2b/3a/3b   -> 新同结构(直接 copy)
+        老 conv4a [256,128,3,3]   -> 新 conv4a [128,128,3,3]: 取前 128 个输出通道
+        老 conv4b [256,256,3,3]   -> 新 conv4b [128,128,3,3]: 输入/输出各取前 128
+        老 det_conv1 [256,256,3,3] -> 新 det_conv1 [256,128,3,3]: 输入取前 128
+        老 desc_conv1 [256,256,3,3]-> 新 desc_conv1 [256,128,3,3]: 输入取前 128
+        老 det_conv2 / desc_conv2 -> 同结构(直接 copy)
+        老 BN 参数(若存在)        -> 按通道截断
+
+    BN 行为:老架构可能没 BN,新架构有 BN(默认 init running stats=0/1,
+    在 forward 时接近 identity,会重新估计)。建议 fine-tune 前
+    调用 calibrate_bn() 跑几批数据估 BN stats,精度更高。
+
+    Returns:
+        model: 加载后的 model
+        legacy_loaded: int,成功映射的层数
+    """
+    import torch
+    ckpt = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
+    sd = ckpt.get('model_state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
+    sd = {k[7:] if k.startswith('module.') else k: v for k, v in sd.items()}
+
+    def take(t, n, dim=0):
+        # take first n along given dim
+        if t.ndim > dim and t.shape[dim] >= n:
+            return t.narrow(dim, 0, n).clone()
+        return t
+        return t
+
+    new_sd = {}
+    legacy_loaded = 0
+    for k, v in sd.items():
+        if k == 'conv1a.weight' or k == 'conv1a.bias':
+            new_sd[k] = v; legacy_loaded += 1
+        elif k == 'conv1b.weight' or k == 'conv1b.bias':
+            new_sd[k] = v; legacy_loaded += 1
+        elif k == 'conv2a.weight' or k == 'conv2a.bias':
+            new_sd[k] = v; legacy_loaded += 1
+        elif k == 'conv2b.weight' or k == 'conv2b.bias':
+            new_sd[k] = v; legacy_loaded += 1
+        elif k == 'conv3a.weight' or k == 'conv3a.bias':
+            new_sd[k] = v; legacy_loaded += 1
+        elif k == 'conv3b.weight' or k == 'conv3b.bias':
+            new_sd[k] = v; legacy_loaded += 1
+        # 关键截断:老 conv4a 输出 256,新 conv4a 输出 128,取前 128
+        elif k == 'conv4a.weight':
+            new_sd[k] = take(v, 128); legacy_loaded += 1
+        elif k == 'conv4a.bias':
+            new_sd[k] = take(v, 128); legacy_loaded += 1
+        # 老 conv4b 输入 256 输出 256,新输入 128 输出 128,各取前 128
+        elif k == 'conv4b.weight':
+            # weight 形状 [out, in, k, k] -> [128, 128, 3, 3]
+            new_sd[k] = take(take(v, 128, dim=0), 128, dim=1); legacy_loaded += 1
+        elif k == 'conv4b.bias':
+            new_sd[k] = take(v, 128); legacy_loaded += 1
+        # BN(若老架构有):截前 128
+        elif k in ('bn4a.weight', 'bn4a.bias', 'bn4a.running_mean', 'bn4a.running_var'):
+            new_sd[k] = take(v, 128); legacy_loaded += 1
+        elif k in ('bn4b.weight', 'bn4b.bias', 'bn4b.running_mean', 'bn4b.running_var'):
+            new_sd[k] = take(v, 128); legacy_loaded += 1
+        # det_conv1 输入 256 -> 128(输出 256 保留)
+        elif k == 'det_conv1.weight':
+            new_sd[k] = take(v, 128, dim=1); legacy_loaded += 1
+        elif k == 'det_conv1.bias':
+            new_sd[k] = v; legacy_loaded += 1
+        # BN_det1 若存在
+        elif k in ('bn_det1.weight', 'bn_det1.bias', 'bn_det1.running_mean', 'bn_det1.running_var'):
+            new_sd[k] = v; legacy_loaded += 1
+        # det_conv2 同结构
+        elif k in ('det_conv2.weight', 'det_conv2.bias',
+                   'bn_det2.weight', 'bn_det2.bias', 'bn_det2.running_mean', 'bn_det2.running_var'):
+            new_sd[k] = v; legacy_loaded += 1
+        # desc_conv1 输入 256 -> 128
+        elif k == 'desc_conv1.weight':
+            new_sd[k] = take(v, 128, dim=1); legacy_loaded += 1
+        elif k == 'desc_conv1.bias':
+            new_sd[k] = v; legacy_loaded += 1
+        elif k in ('bn_desc1.weight', 'bn_desc1.bias', 'bn_desc1.running_mean', 'bn_desc1.running_var'):
+            new_sd[k] = v; legacy_loaded += 1
+        # desc_conv2 同结构
+        elif k in ('desc_conv2.weight', 'desc_conv2.bias',
+                   'bn_desc2.weight', 'bn_desc2.bias', 'bn_desc2.running_mean', 'bn_desc2.running_var'):
+            new_sd[k] = v; legacy_loaded += 1
+        # 其它 key 全部忽略
+
+    missing, unexpected = model.load_state_dict(new_sd, strict=False)
+    if verbose:
+        print(f'[Legacy loader] {legacy_loaded} weights mapped and loaded')
+        if missing:
+            print(f'  missing in new model (BN params 等,init 默认): {len(missing)}')
+            for m in missing[:8]:
+                print(f'    - {m}')
+        if unexpected:
+            print(f'  unexpected keys (ignored): {len(unexpected)}')
+            for u in unexpected[:5]:
+                print(f'    - {u}')
+        print(f'  -> BN running stats 默认 init=0/1,建议 fine-tune 前调 calibrate_bn()')
+    return model, legacy_loaded
+
+
+@torch.no_grad()
+def calibrate_bn(model, image_paths, device='cpu', input_height=480, input_width=640, num_batches=8):
+    """
+    在真实数据上跑几批 forward,校准 BN running_mean / running_var。
+    legacy 加载的 BN 默认 init=0/1(实际近似 identity),校准后精度更高。
+
+    用法:
+        calibrate_bn(model, sorted(glob('~/superpoint/dataset/dark/*.JPG'))[:50])
+    """
+    import cv2
+    import numpy as np
+    from visualize import preprocess_image
+    from torch.utils.data import DataLoader, TensorDataset
+
+    model.train()  # 关键:BN 收集 running stats
+    # 收集图
+    imgs = []
+    for p in image_paths[:num_batches * 4]:
+        img = cv2.imread(p, cv2.IMREAD_GRAYSCALE)
+        if img is None: continue
+        img = cv2.resize(img, (input_width, input_height))
+        t = preprocess_image(img)
+        imgs.append(t)
+        if len(imgs) >= num_batches * 4:
+            break
+    if not imgs:
+        print('[calibrate_bn] no valid images')
+        model.eval()
+        return
+    batch = torch.stack(imgs).to(device)
+    print(f'[calibrate_bn] running {num_batches} batches of {batch.shape[0]} images')
+    # 多次 forward 让 running stats 收敛
+    for _ in range(3):
+        for i in range(0, batch.shape[0], max(1, batch.shape[0] // num_batches)):
+            model(batch[i:i+num_batches])
+    model.eval()
+    print('[calibrate_bn] done, BN running stats calibrated')
