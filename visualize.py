@@ -110,6 +110,10 @@ def detect_keypoints(model, image_tensor, device, threshold=0.005, nms_distance=
     print(f"heatmap stats -> min: {heatmap.min():.6f}, max: {heatmap.max():.6f}, mean: {heatmap.mean():.6f}, threshold: {threshold}")
 
     ys, xs = np.where(heatmap > threshold)
+    edge_margin = 8  # 排除边缘 N 像素,避免模型在边缘的系统性高响应
+    mask = (ys >= edge_margin) & (ys < heatmap.shape[0] - edge_margin) & (xs >= edge_margin) & (xs < heatmap.shape[1] - edge_margin)
+    ys, xs = ys[mask], xs[mask]
+
     candidates = [(float(heatmap[y, x]), int(x), int(y)) for y, x in zip(ys, xs)]
     candidates.sort(reverse=True)
 
