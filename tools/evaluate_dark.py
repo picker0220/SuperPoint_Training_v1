@@ -1,4 +1,4 @@
-﻿"""
+"""
 在 dark/ 上直观对比 SuperPoint 与 ORB
 
 指标:
@@ -27,9 +27,9 @@ from matplotlib.patches import Circle
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from config.config import Config
-from src.models.superpoint import SuperPoint
+from src.models.superpoint import SuperPoint, load_superpoint
 from src.models.losses import SuperPointLoss
-from visualize import preprocess_image, load_model, detect_keypoints
+from visualize import preprocess_image, detect_keypoints
 
 
 def parse_args():
@@ -134,7 +134,7 @@ def main():
         raise RuntimeError(f'目录 {args.image_dir} 中没有图像')
 
     if args.ckpt and os.path.exists(args.ckpt):
-        model = load_model(args.ckpt, device=device)
+        model = load_superpoint(args.ckpt, device=device, verbose=True)
     else:
         print(f'警告: 没找到 checkpoint {args.ckpt},使用随机初始化的 SuperPoint')
         config = Config()

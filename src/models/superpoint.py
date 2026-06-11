@@ -534,3 +534,37 @@ def detect_arch_from_ckpt(ckpt_path):
     if 'conv1a.weight' in sd:
         return 'legacy'
     return 'unknown'
+
+def load_superpoint(ckpt_path, device='cpu', verbose=False):
+    """
+    通用 SuperPoint 加载器:自动识别老 / 新 / MagicLeap 架构。
+
+    识别逻辑来自 detect_arch_from_ckpt():
+        legacy     -> SuperPointLegacy + load_legacy_checkpoint (1:1 完美加载, 无截断)
+        magicpoint -> SuperPoint + load_magicpoint_weights (命名映射; 通道不匹配 strict=False 跳过)
+        new/unknown-> SuperPoint + 原始 state_dict (strict=False 容忍 missing/unexpected)
+
+    用法:
+        model = load_superpoint('checkpoints/superpoint_epoch_35.pth', device='cuda')
+    """
+    arch = detect_arch_from_ckpt(ckpt_path)
+    if verbose:
+        print('[load_superpoint] detected arch:', arch)
+
+    if arch == 'legacy':
+        return load_legacy_checkpoint(ckpt_path, device=device, verbose=verbose)
+
+    if arch == 'magicpoint':
+        model = SuperPoint(encoder_dim=256, grid_size=8)
+        model = load_magicpoint_weights(model, ckpt_path, strict=False, verbose=verbose)
+        return model.to(device).eval()
+
+    # 'new' or 'unknown'
+    model = SuperPoint(encoder_dim=256, grid_size=8)
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    sd = ckpt.get('model_state_dict', ckpt) if isinstance(ckpt, dict) else ckpt
+    sd = {k[7:] if k.startswith('module.') else k: v for k, v in sd.items()}
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    if verbose:
+        print('[load_superpoint] new arch: missing=%d unexpected=%d' % (len(missing), len(unexpected)))
+    return model.to(device).eval()
