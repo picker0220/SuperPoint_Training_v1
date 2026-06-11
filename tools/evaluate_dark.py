@@ -278,7 +278,7 @@ def superpoint_match(kps1, kps2, model, img1, img2, device, threshold, nms_dista
     nbr = np.argsort(-sim, axis=1)[:, :2]
     good = 0
     for i, (m, n) in enumerate(nbr):
-        if sim[i, m] >= 0.85 * sim[i, n]:
+        if sim[i, m] >= 0.75 * sim[i, n]:  # Lowe ratio 0.75 (was 0.85, too loose -> always passes)
             good += 1
     return good
 
