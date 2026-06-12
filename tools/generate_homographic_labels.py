@@ -86,6 +86,12 @@ def load_model(checkpoint_path, device='cuda'):
         print('[load_model] detected MagicLeap format, applying key mapping')
         model = load_magicpoint_weights(model, checkpoint_path, strict=False, verbose=False)
     else:
+        # 老架构 (epoch_35 等: 无 BN, conv4a 输出 256) 走 load_superpoint,
+        # 避免在 new arch 上 size mismatch。
+        from src.models.superpoint import detect_arch_from_ckpt
+        if detect_arch_from_ckpt(checkpoint_path) == 'legacy':
+            from src.models.superpoint import load_superpoint
+            return load_superpoint(checkpoint_path, device=device, verbose=False)
         model.load_state_dict(stripped)
     model = model.to(device)
     model.eval()
