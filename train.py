@@ -237,6 +237,15 @@ def load_checkpoint_weights(model, checkpoint_path, device, is_parallel=False):
     print("=" * 60)
     print("加载初始化权重")
     print("=" * 60)
+    # 老架构 / MagicLeap 走专用 loader,新架构走原 state_dict 路径
+    from src.models.superpoint import detect_arch_from_ckpt, load_legacy_weights, load_magicpoint_weights
+    arch = detect_arch_from_ckpt(checkpoint_path)
+    if arch == "legacy":
+        model, _ = load_legacy_weights(model, checkpoint_path, verbose=True)
+        return model
+    if arch == "magicpoint":
+        model = load_magicpoint_weights(model, checkpoint_path, strict=False, verbose=True)
+        return model
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get('model_state_dict', checkpoint)
 
