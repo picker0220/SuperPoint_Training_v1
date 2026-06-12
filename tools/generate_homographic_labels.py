@@ -215,8 +215,14 @@ def select_candidates_with_grid(candidates, width, height, grid_rows=6, grid_col
     return selected
 
 
-def nms_points(heatmap, threshold=0.015, nms_distance=8, grid_topk=0, grid_rows=6, grid_cols=8):
+def nms_points(heatmap, threshold=0.015, nms_distance=8, grid_topk=0,
+               grid_rows=6, grid_cols=8, edge_margin=8):
+    # edge_margin 排除图像边缘 N 像素内的响应点,跟 visualize.py:detect_keypoints 保持一致
     ys, xs = np.where(heatmap > threshold)
+    if edge_margin > 0:
+        h, w = heatmap.shape[:2]
+        mask = (ys >= edge_margin) & (ys < h - edge_margin)              & (xs >= edge_margin) & (xs < w - edge_margin)
+        ys, xs = ys[mask], xs[mask]
     candidates = [(float(heatmap[y, x]), int(x), int(y)) for y, x in zip(ys, xs)]
     candidates.sort(reverse=True)
     candidates = select_candidates_with_grid(
